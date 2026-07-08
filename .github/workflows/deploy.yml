@@ -28,7 +28,7 @@ jobs:
         with:
           channel: 'stable'
       - name: Build Web
-        working-directory: ./biblioteca
+        working-directory: biblioteca
         run: |
           flutter pub get
           flutter config --enable-web
