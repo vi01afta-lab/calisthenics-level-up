@@ -29,10 +29,11 @@ jobs:
           channel: 'stable'
       - name: Build Web
         run: |
-          flutter pub get --directory=biblioteca
+          cd biblioteca
+          flutter pub get
           flutter config --enable-web
-          flutter build web --base-href /calisthenics-level-up/ --target biblioteca/lib/main.dart
+          flutter build web --base-href /calisthenics-level-up/
       - name: Deploy to GitHub Pages
         uses: JamesIves/github-pages-deploy-action@v4
         with:
-          folder: build/web
+          folder: biblioteca/build/web
