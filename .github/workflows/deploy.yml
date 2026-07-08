@@ -1,24 +1,17 @@
-name: Auto-Deploy Firestore Rules
+name: Auto-Deploy Firestore & Web HUD
 
 on:
   push:
     branches:
       - main
-    paths:
-      - 'firestore.rules'
 
 jobs:
-  deploy:
+  deploy-firestore:
     runs-on: ubuntu-latest
     steps:
-      - name: 📥 Descargar código
-        uses: actions/checkout@v4
-
-      - name: ⚙️ Instalar Firebase CLI
-        run: npm install -g firebase-tools
-
-      - name: 🚀 Desplegar Reglas en Producción
-        env:
+      - uses: actions/checkout@v4
+      - run: npm install -g firebase-tools
+      - env:
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
           PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
         run: |
@@ -26,3 +19,17 @@ jobs:
           echo '{"firestore": {"rules": "firestore.rules"}}' > firebase.json
           export GOOGLE_APPLICATION_CREDENTIALS="$(pwd)/firebase_key.json"
           firebase deploy --only firestore:rules --project $PROJECT_ID
+
+  build-and-deploy-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+      - run: flutter config --enable-web
+      - run: flutter build web --base-href /calisthenics-level-up/
+      - name: Deploy to GitHub Pages
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: build/web
