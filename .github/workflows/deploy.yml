@@ -1,4 +1,4 @@
-name: Debug and Deploy
+name: Auto-Deploy Firestore & Web HUD
 
 on:
   push:
@@ -6,11 +6,33 @@ on:
       - main
 
 jobs:
-  debug-structure:
+  deploy-firestore:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: List files (Diagnostic)
+      - run: npm install -g firebase-tools
+      - env:
+          FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
+          PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
         run: |
-          echo "--- LISTA DE ARCHIVOS ---"
-          ls -R
+          echo "$FIREBASE_CREDENTIALS" > firebase_key.json
+          echo '{"firestore": {"rules": "firestore.rules"}}' > firebase.json
+          export GOOGLE_APPLICATION_CREDENTIALS="$(pwd)/firebase_key.json"
+          firebase deploy --only firestore:rules --project $PROJECT_ID
+
+  build-and-deploy-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+      - name: Build Web
+        run: |
+          flutter pub get
+          flutter config --enable-web
+          flutter build web --base-href /calisthenics-level-up/
+      - name: Deploy to GitHub Pages
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: build/web
