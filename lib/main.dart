@@ -12,9 +12,19 @@ void main() async {
   runApp(const MyApp());
 }
 
+class StatsRepository {
+  final Box _box = Hive.box('user_stats');
+  
+  double get xp => _box.get('xp', defaultValue: 0.0);
+  
+  void updateXp(double newXp) {
+    _box.put('xp', newXp);
+    // Aquí iría la lógica de sincronización diferida con Firestore
+  }
+}
+
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
-
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -27,54 +37,60 @@ class MyApp extends StatelessWidget {
   }
 }
 
-class RPGDashboard extends StatelessWidget {
+class RPGDashboard extends StatefulWidget {
   const RPGDashboard({super.key});
+  @override
+  State<RPGDashboard> createState() => _RPGDashboardState();
+}
+
+class _RPGDashboardState extends State<RPGDashboard> {
+  late StreamSubscription<User?> _authSubscription;
+  final StatsRepository _repo = StatsRepository();
+
+  @override
+  void initState() {
+    super.initState();
+    _authSubscription = FirebaseAuth.instance.authStateChanges().listen((user) {});
+  }
+
+  @override
+  void dispose() {
+    _authSubscription.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: StreamBuilder<User?>(
-        stream: FirebaseAuth.instance.authStateChanges(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          
-          return ValueListenableBuilder(
+      body: Column(
+        children: [
+          const SizedBox(height: 60),
+          ValueListenableBuilder(
             valueListenable: Hive.box('user_stats').listenable(),
-            builder: (context, Box box, _) {
-              return SafeArea(
-                child: Column(
-                  children: [
-                    Text("PLAYER: ${snapshot.data?.uid ?? 'GUEST'}", 
-                      style: const TextStyle(fontFamily: 'Rajdhani', color: Color(0xFF00D4FF))),
-                    XPBar(currentXp: box.get('xp', defaultValue: 0.0)),
-                    const TabataWidget(),
-                  ],
-                ),
-              );
+            builder: (context, box, _) {
+              return XPBar(currentXp: _repo.xp, maxXp: 1000);
             },
-          );
-        },
+          ),
+          const Expanded(child: TabataWidget()),
+        ],
       ),
     );
   }
 }
 
 class XPBar extends StatelessWidget {
-  final double currentXp;
-  const XPBar({super.key, required this.currentXp});
+  final double currentXp, maxXp;
+  const XPBar({super.key, required this.currentXp, required this.maxXp});
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 20,
-      width: double.infinity,
-      decoration: BoxDecoration(border: Border.all(color: const Color(0xFF00D4FF))),
-      child: LinearProgressIndicator(
-        value: (currentXp / 1000).clamp(0.0, 1.0), 
-        backgroundColor: Colors.black, 
-        color: const Color(0xFF00D4FF)
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        children: [
+          Text("${(currentXp / maxXp * 100).toInt()}%", style: const TextStyle(fontFamily: 'Orbitron', color: Color(0xFF00D4FF))),
+          LinearProgressIndicator(value: currentXp / maxXp, backgroundColor: Colors.white10, color: const Color(0xFF00D4FF)),
+        ],
       ),
     );
   }
@@ -87,24 +103,25 @@ class TabataWidget extends StatefulWidget {
 }
 
 class _TabataWidgetState extends State<TabataWidget> {
-  int seconds = 20;
+  int _seconds = 20;
   Timer? _timer;
+  bool _isActive = false;
+  final StatsRepository _repo = StatsRepository();
 
-  void toggleTimer() {
-    if (_timer?.isActive ?? false) {
+  void _toggleTimer() {
+    if (_isActive) {
       _timer?.cancel();
     } else {
       _timer = Timer.periodic(const Duration(seconds: 1), (t) {
-        if (!mounted) return;
-        setState(() {
-          if (seconds > 0) {
-            seconds--;
-          } else {
-            _timer?.cancel();
-          }
-        });
+        if (_seconds > 0) {
+          setState(() => _seconds--);
+        } else {
+          _timer?.cancel();
+          _repo.updateXp(_repo.xp + 10); // Sincronización diferida al finalizar
+        }
       });
     }
+    setState(() => _isActive = !_isActive);
   }
 
   @override
@@ -116,9 +133,13 @@ class _TabataWidgetState extends State<TabataWidget> {
   @override
   Widget build(BuildContext context) {
     return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Text("$seconds", style: const TextStyle(fontFamily: 'Orbitron', fontSize: 48, color: Colors.white)),
-        ElevatedButton(onPressed: toggleTimer, child: const Text("START/PAUSE")),
+        Text("$_seconds", style: const TextStyle(fontFamily: 'Orbitron', fontSize: 80, color: Colors.white)),
+        IconButton(
+          icon: Icon(_isActive ? Icons.pause : Icons.play_arrow, size: 50, color: const Color(0xFF00D4FF)),
+          onPressed: _toggleTimer,
+        )
       ],
     );
   }
