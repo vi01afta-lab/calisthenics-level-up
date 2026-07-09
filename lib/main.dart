@@ -35,3 +35,59 @@ void main() async {
     child: const MyApp(),
   ));
 }
+
+// ═══ ETAPA 1 — MOTOR RPG ═══
+
+class RPGEngine extends ChangeNotifier {
+  int level = 1, xp = 0, totalSessions = 0;
+  Map<String, DateTime> cooldowns = {};
+  int get requiredXP => (100 * pow(level, 1.5)).round();
+  double get xpPercent => xp / requiredXP;
+
+  void loadFromHive() {
+    final box = Hive.box('user_data');
+    level = box.get('level', defaultValue: 1);
+    xp = box.get('xp', defaultValue: 0);
+    totalSessions = box.get('totalSessions', defaultValue: 0);
+    final cd = box.get('cooldowns', defaultValue: <String, dynamic>{});
+    if (cd is Map) {
+      cooldowns = {};
+      cd.forEach((k, v) { if (v is String) cooldowns[k.toString()] = DateTime.parse(v); });
+    }
+    notifyListeners();
+  }
+
+  bool isOnCooldown(String ex) {
+    final e = cooldowns[ex];
+    return e != null && DateTime.now().isBefore(e);
+  }
+
+  Duration remainingCooldown(String ex) {
+    final e = cooldowns[ex];
+    if (e == null) return Duration.zero;
+    final r = e.difference(DateTime.now());
+    return r.isNegative ? Duration.zero : r;
+  }
+
+  Future<void> registerSession(String exercise, int series, int reps) async {
+    final xpGained = series * reps * 2;
+    final cdH = ((series * reps * 0.5) / 2.0).clamp(12.0, 72.0);
+    xp += xpGained;
+    totalSessions++;
+    cooldowns[exercise] = DateTime.now().add(Duration(hours: cdH.round()));
+    while (xp >= requiredXP) { xp -= requiredXP; level++; }
+    final cdMap = <String, String>{};
+    cooldowns.forEach((k, v) => cdMap[k] = v.toIso8601String());
+    await Hive.box('user_data').putAll({'level': level, 'xp': xp, 'totalSessions': totalSessions, 'cooldowns': cdMap});
+    notifyListeners();
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        await FirebaseFirestore.instance.collection('users').doc(user.uid)
+            .set({'level': level, 'xp': xp, 'totalSessions': totalSessions}, SetOptions(merge: true));
+      }
+    } catch (_) {}
+  }
+
+  Future<void> syncPendingSessions() async {}
+}
