@@ -3,113 +3,182 @@ import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:provider/provider.dart';
-
-// Service Locator para desacoplar lógica de UI
-class ServiceLocator {
-  static final ServiceLocator instance = ServiceLocator._internal();
-  ServiceLocator._internal();
-  EvolutionGalleryProvider? galleryProvider;
-}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
-  await FirebaseAuth.instance.signInAnonymously();
+  try { await Firebase.initializeApp(); } catch (e) {}
+  try { await FirebaseAuth.instance.signInAnonymously(); } catch (e) {}
+  
   await Hive.initFlutter();
   await Hive.openBox('user_data');
   await Hive.openBox('sessions');
   await Hive.openBox('evolution');
-
-  runApp(MultiProvider(
-    providers: [
-      ChangeNotifierProvider(create: (_) => RPGEngine()..loadFromHive()),
-      ChangeNotifierProvider(create: (_) => EvolutionGalleryProvider()..init()),
-      ChangeNotifierProvider(create: (_) => SessionLogProvider()..init()),
-    ],
-    child: const MyApp(),
-  ));
+  
+  runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) {
-    // Registrar proveedores en el locator
-    ServiceLocator.instance.galleryProvider = context.read<EvolutionGalleryProvider>();
-    return MaterialApp(
-      theme: ThemeData.dark().copyWith(scaffoldBackgroundColor: const Color(0xFF0A0A0F)),
-      home: const AppShell(),
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => RPGEngine()),
+        ChangeNotifierProvider(create: (_) => EvolutionGalleryProvider()..init()),
+        ChangeNotifierProvider(create: (_) => SessionLogProvider()..init()),
+      ],
+      child: MaterialApp(
+        theme: ThemeData.dark().copyWith(scaffoldBackgroundColor: const Color(0xFF0A0A0F)),
+        home: const AppShell(),
+      ),
     );
   }
 }
 
 class RPGEngine extends ChangeNotifier {
-  int level = 1; int xp = 0; int totalSessions = 0;
-  void loadFromHive() { 
-    final box = Hive.box('user_data'); 
-    level = box.get('level', defaultValue: 1); 
-    xp = box.get('xp', defaultValue: 0); 
-    notifyListeners(); 
-  }
-  void registerSession(int xpGained) {
-    int oldLevel = level;
+  int level = 1;
+  int xp = 0;
+  int requiredXP = 100;
+
+  void registerSession(String exercise, int series, int reps, BuildContext context) {
+    int xpGained = (series * reps * 10);
     xp += xpGained;
-    if (xp >= level * 100) { level++; xp = 0; }
-    totalSessions++;
-    Hive.box('user_data').putAll({'level': level, 'xp': xp});
-    notifyListeners();
-    if (level > oldLevel) {
-      ServiceLocator.instance.galleryProvider?.recordSnapshot(level, xp, totalSessions);
+    if (xp >= requiredXP) {
+      level++;
+      xp -= requiredXP;
+      requiredXP = (requiredXP * 1.2).toInt();
+      context.read<EvolutionGalleryProvider>().recordSnapshot(level, xp);
     }
+    context.read<SessionLogProvider>().addSession(exercise, series, reps, xpGained);
+    notifyListeners();
   }
 }
 
 class EvolutionGalleryProvider extends ChangeNotifier {
   List<Map> entries = [];
-  bool isLoading = true;
-  void init() {
-    final box = Hive.box('evolution');
-    entries = box.values.toList().cast<Map>();
-    isLoading = false;
+  
+  Future<void> init() async {
+    entries = Hive.box('evolution').values.cast<Map>().toList();
     notifyListeners();
   }
-  Future<void> recordSnapshot(int level, int xp, int total) async {
-    await Hive.box('evolution').add({'date': DateTime.now().toString(), 'level': level});
-    init();
+
+  Future<void> recordSnapshot(int level, int xp) async {
+    final data = {'date': DateTime.now().toIso8601String(), 'level': level, 'xp': xp, 'isSynced': false};
+    await Hive.box('evolution').add(data);
+    entries.add(data);
+    _sync();
+    notifyListeners();
   }
-  @override
-  void dispose() { super.dispose(); }
+
+  Future<void> _sync() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    final box = Hive.box('evolution');
+    for (int i = 0; i < box.length; i++) {
+      var entry = Map.from(box.getAt(i));
+      if (entry['isSynced'] == false) {
+        await FirebaseFirestore.instance.collection('users').doc(user.uid).collection('evolution').add(entry);
+        entry['isSynced'] = true;
+        await box.putAt(i, entry);
+      }
+    }
+  }
 }
 
 class SessionLogProvider extends ChangeNotifier {
   List<Map> sessions = [];
-  void init() {
-    sessions = Hive.box('sessions').values.toList().cast<Map>();
+  
+  Future<void> init() async {
+    sessions = Hive.box('sessions').values.cast<Map>().toList().reversed.toList();
     notifyListeners();
   }
-  void addSession(String ex, int reps) {
-    Hive.box('sessions').add({'ex': ex, 'reps': reps, 'date': DateTime.now().toIso8601String()});
-    init();
+
+  Future<void> addSession(String exercise, int series, int reps, int xp) async {
+    final data = {'exercise': exercise, 'xp': xp, 'date': DateTime.now().toIso8601String(), 'isSynced': false};
+    await Hive.box('sessions').add(data);
+    sessions.insert(0, data);
+    _sync();
+    notifyListeners();
   }
-  @override
-  void dispose() { super.dispose(); }
+
+  Future<void> _sync() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    final box = Hive.box('sessions');
+    for (int i = 0; i < box.length; i++) {
+      var entry = Map.from(box.getAt(i));
+      if (entry['isSynced'] == false) {
+        await FirebaseFirestore.instance.collection('users').doc(user.uid).collection('sessions').add(entry);
+        entry['isSynced'] = true;
+        await box.putAt(i, entry);
+      }
+    }
+  }
 }
 
-class AppShell extends StatefulWidget { const AppShell({super.key}); @override State<AppShell> createState() => _AppShellState(); }
+class AppShell extends StatefulWidget {
+  const AppShell({super.key});
+  @override
+  State<AppShell> createState() => _AppShellState();
+}
+
 class _AppShellState extends State<AppShell> {
   int _idx = 0;
+  final List<Widget> _screens = [const HomeScreen(), const TabataScreen(), const SessionHistoryScreen()];
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(index: _idx, children: [
-        Center(child: ElevatedButton(onPressed: () => context.read<RPGEngine>().registerSession(50), child: const Text("Entrenar"))),
-        const Center(child: Text("Stats")),
-      ]),
-      bottomNavigationBar: BottomNavigationBar(currentIndex: _idx, onTap: (i) => setState(() => _idx = i), items: const [
-        BottomNavigationBarItem(icon: Icon(Icons.fitness_center), label: 'Entrena'),
-        BottomNavigationBarItem(icon: Icon(Icons.bar_chart), label: 'Stats'),
-      ]),
+      body: _screens[_idx],
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _idx,
+        onTap: (i) => setState(() => _idx = i),
+        items: const [
+          BottomNavigationBarItem(icon: Icon(Icons.fitness_center), label: 'ENTRENA'),
+          BottomNavigationBarItem(icon: Icon(Icons.timer), label: 'TABATA'),
+          BottomNavigationBarItem(icon: Icon(Icons.history), label: 'HISTORIAL'),
+        ],
+      ),
     );
+  }
+}
+
+class HomeScreen extends StatelessWidget {
+  const HomeScreen({super.key});
+  @override
+  Widget build(BuildContext context) {
+    final rpg = context.watch<RPGEngine>();
+    return Center(child: ElevatedButton(onPressed: () => rpg.registerSession("Flexiones", 3, 10, context), child: Text("Nivel ${rpg.level}")));
+  }
+}
+
+class TabataScreen extends StatefulWidget {
+  const TabataScreen({super.key});
+  @override
+  State<TabataScreen> createState() => _TabataScreenState();
+}
+
+class _TabataScreenState extends State<TabataScreen> {
+  Timer? _timer;
+  int seconds = 20;
+  void start() {
+    _timer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (seconds > 0) setState(() => seconds--);
+      else t.cancel();
+    });
+  }
+  @override
+  void dispose() { _timer?.cancel(); super.dispose(); }
+  @override
+  Widget build(BuildContext context) => Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Text("$seconds"), IconButton(icon: const Icon(Icons.play_arrow), onPressed: start)]));
+}
+
+class SessionHistoryScreen extends StatelessWidget {
+  const SessionHistoryScreen({super.key});
+  @override
+  Widget build(BuildContext context) {
+    final logs = context.watch<SessionLogProvider>();
+    return ListView.builder(itemCount: logs.sessions.length, itemBuilder: (c, i) => ListTile(title: Text(logs.sessions[i]['exercise'])));
   }
 }
