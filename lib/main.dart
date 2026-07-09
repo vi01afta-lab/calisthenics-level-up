@@ -1,76 +1,83 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'dart:async';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp();
   await Hive.initFlutter();
-  await Hive.openBox('rpg_data');
-  await Hive.openBox('sync_queue');
+  await Hive.openBox('user_stats');
   runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      theme: ThemeData.dark().copyWith(scaffoldBackgroundColor: const Color(0xFF0A0A0F)),
+      theme: ThemeData.dark().copyWith(
+        scaffoldBackgroundColor: const Color(0xFF0A0A0F),
+        primaryColor: const Color(0xFF00D4FF),
+      ),
       home: const RPGDashboard(),
     );
   }
 }
 
-class SyncService {
-  static Future<void> sync() async {
-    final box = Hive.box('sync_queue');
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null || box.isEmpty) return;
-
-    final batch = FirebaseFirestore.instance.batch();
-    final keys = box.keys.toList();
-    
-    for (var key in keys) {
-      final data = box.get(key);
-      final ref = FirebaseFirestore.instance.collection('users').doc(uid).collection('sessions').doc();
-      batch.set(ref, {...data, 'userId': uid});
-    }
-    
-    await batch.commit();
-    await box.clear();
-  }
-}
-
-class RPGDashboard extends StatefulWidget {
+class RPGDashboard extends StatelessWidget {
   const RPGDashboard({super.key});
+
   @override
-  State<RPGDashboard> createState() => _RPGDashboardState();
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: StreamBuilder<User?>(
+        stream: FirebaseAuth.instance.authStateChanges(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          
+          return ValueListenableBuilder(
+            valueListenable: Hive.box('user_stats').listenable(),
+            builder: (context, Box box, _) {
+              return SafeArea(
+                child: Column(
+                  children: [
+                    Text("PLAYER: ${snapshot.data?.uid ?? 'GUEST'}", 
+                      style: const TextStyle(fontFamily: 'Rajdhani', color: Color(0xFF00D4FF))),
+                    XPBar(currentXp: box.get('xp', defaultValue: 0.0)),
+                    const TabataWidget(),
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
 }
 
-class _RPGDashboardState extends State<RPGDashboard> with WidgetsBindingObserver {
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-  }
+class XPBar extends StatelessWidget {
+  final double currentXp;
+  const XPBar({super.key, required this.currentXp});
 
   @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
+  Widget build(BuildContext context) {
+    return Container(
+      height: 20,
+      width: double.infinity,
+      decoration: BoxDecoration(border: Border.all(color: const Color(0xFF00D4FF))),
+      child: LinearProgressIndicator(
+        value: (currentXp / 1000).clamp(0.0, 1.0), 
+        backgroundColor: Colors.black, 
+        color: const Color(0xFF00D4FF)
+      ),
+    );
   }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) SyncService.sync();
-  }
-
-  @override
-  Widget build(BuildContext context) => const Scaffold(body: Center(child: TabataWidget()));
 }
 
 class TabataWidget extends StatefulWidget {
@@ -80,35 +87,39 @@ class TabataWidget extends StatefulWidget {
 }
 
 class _TabataWidgetState extends State<TabataWidget> {
+  int seconds = 20;
   Timer? _timer;
-  int _seconds = 20;
 
-  void _saveSession() {
-    final box = Hive.box('sync_queue');
-    box.add({'duration': 20, 'timestamp': DateTime.now().toIso8601String()});
-    SyncService.sync();
-  }
-
-  void _toggleTimer() {
-    if (_timer != null) {
+  void toggleTimer() {
+    if (_timer?.isActive ?? false) {
       _timer?.cancel();
-      _timer = null;
     } else {
       _timer = Timer.periodic(const Duration(seconds: 1), (t) {
-        if (_seconds > 0) setState(() => _seconds--);
-        else {
-          t.cancel();
-          _saveSession();
-        }
+        if (!mounted) return;
+        setState(() {
+          if (seconds > 0) {
+            seconds--;
+          } else {
+            _timer?.cancel();
+          }
+        });
       });
     }
   }
 
   @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-      Text("$_seconds", style: const TextStyle(fontSize: 80)),
-      IconButton(icon: const Icon(Icons.play_arrow), onPressed: _toggleTimer)
-    ]);
+    return Column(
+      children: [
+        Text("$seconds", style: const TextStyle(fontFamily: 'Orbitron', fontSize: 48, color: Colors.white)),
+        ElevatedButton(onPressed: toggleTimer, child: const Text("START/PAUSE")),
+      ],
+    );
   }
 }
