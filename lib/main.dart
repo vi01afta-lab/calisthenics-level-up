@@ -9,7 +9,11 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Hive.initFlutter();
   await Hive.openBox('user_stats');
-  await Firebase.initializeApp();
+  try {
+    await Firebase.initializeApp();
+  } catch (e) {
+    debugPrint('Firebase no disponible en web: $e');
+  }
   runApp(const CalisthenicsApp());
 }
 
