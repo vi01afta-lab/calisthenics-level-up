@@ -1,127 +1,85 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:hive_flutter/hive_flutter.dart';
 import 'package:provider/provider.dart';
-import 'package:flutter_animate/flutter_animate.dart';
-import 'package:google_fonts/google_fonts.dart';
-import 'dart:async';
+import 'package:hive_flutter/hive_flutter.dart';
 
-const Color kBg = Color(0xFF0A0A0F);
-const Color kPanel = Color(0xFF12121A);
-const Color kAccent = Color(0xFF00D4FF);
-const Color kTextSub = Color(0xFF888899);
+const kBg = Color(0xFF0A0A0F);
+const kAccent = Color(0xFF00D4FF);
+const kGold = Color(0xFFFFD700);
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  try {
-    await Firebase.initializeApp();
-  } catch (e) {}
-  
-  try {
-    await FirebaseAuth.instance.signInAnonymously();
-  } catch (e) {}
-
+  try { await Firebase.initializeApp(); } catch (e) {}
+  try { await FirebaseAuth.instance.signInAnonymously(); } catch (e) {}
   await Hive.initFlutter();
-  await Hive.openBox('user_stats');
-  
-  runApp(
-    MultiProvider(
-      providers: [
-        ChangeNotifierProvider(create: (_) => DashboardProvider()),
-        ChangeNotifierProvider(create: (_) => RPGEngine()),
-        ChangeNotifierProvider(create: (_) => TabataController()),
-      ],
-      child: const MyApp(),
-    ),
-  );
+  await Hive.openBox('muscles');
+  runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      theme: ThemeData.dark().copyWith(scaffoldBackgroundColor: kBg),
-      home: const DashboardScreen(),
+    return ChangeNotifierProvider(
+      create: (_) => DashboardProvider(),
+      child: MaterialApp(theme: ThemeData.dark().copyWith(scaffoldBackgroundColor: kBg), home: const MuscleMapScreen()),
     );
   }
 }
 
 class DashboardProvider extends ChangeNotifier {
-  final Box _box = Hive.box('user_stats');
-  Timer? _syncTimer;
-  int _xpBuffer = 0;
+  final Box _box = Hive.box('muscles');
+  Timer? _debounce;
 
-  int get xp => _box.get('xp', defaultValue: 0);
-  int get level => (xp / 100).floor();
+  Future<void> updateMuscleCooldown(String id, DateTime expiry) async {
+    final oldExpiry = _box.get(id);
+    if (oldExpiry == expiry.toIso8601String()) return;
 
-  void addXp(int amount) {
-    _box.put('xp', xp + amount);
-    _xpBuffer += amount;
+    _box.put(id, expiry.toIso8601String());
     notifyListeners();
-    
-    _syncTimer?.cancel();
-    _syncTimer = Timer(const Duration(seconds: 5), _syncToFirestore);
-  }
 
-  Future<void> _syncToFirestore() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user != null && _xpBuffer > 0) {
-      await FirebaseFirestore.instance.collection('users').doc(user.uid).set(
-        {'xp': xp, 'lastUpdated': FieldValue.serverTimestamp()},
-        SetOptions(merge: true)
-      );
-      _xpBuffer = 0;
-    }
-  }
-
-  @override
-  void dispose() {
-    _syncTimer?.cancel();
-    super.dispose();
+    if (_debounce?.isActive ?? false) _debounce!.cancel();
+    _debounce = Timer(const Duration(seconds: 2), () async {
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid != null) {
+        await FirebaseFirestore.instance.collection('users').doc(uid).collection('muscles').doc(id).set({
+          'cooldownExpiry': Timestamp.fromDate(expiry)
+        });
+      }
+    });
   }
 }
 
 class TabataController extends ChangeNotifier {
-  bool _isActive = false;
-  final List<StreamSubscription> _subs = [];
-
-  bool get isActive => _isActive;
-  
-  void toggle() { _isActive = !_isActive; notifyListeners(); }
-
+  Timer? _timer;
+  void start(Function onTick) => _timer = Timer.periodic(const Duration(seconds: 1), (_) => onTick());
   @override
   void dispose() {
-    for (var sub in _subs) { sub.cancel(); }
+    _timer?.cancel();
     super.dispose();
   }
 }
 
-class RPGEngine extends ChangeNotifier {
-  final Map<String, DateTime> _cooldowns = {};
-  void registerSession(String primary) {
-    _cooldowns[primary] = DateTime.now().add(const Duration(hours: 24));
-    notifyListeners();
-  }
+class MuscleMapScreen extends StatefulWidget {
+  const MuscleMapScreen({super.key});
+  @override
+  State<MuscleMapScreen> createState() => _MuscleMapScreenState();
 }
 
-class DashboardScreen extends StatelessWidget {
-  const DashboardScreen({super.key});
+class _MuscleMapScreenState extends State<MuscleMapScreen> {
+  final TabataController _tabata = TabataController();
+
+  @override
+  void dispose() {
+    _tabata.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
-    final dash = context.watch<DashboardProvider>();
-    return Scaffold(
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text("NIVEL ${dash.level}", style: GoogleFonts.orbitron(fontSize: 32, color: kAccent)),
-            ElevatedButton(onPressed: () => dash.addXp(10), child: const Text("Entrenar (+10 XP)")),
-          ],
-        ),
-      ),
-    );
+    return Scaffold(body: Center(child: Text("Calisthenics Level Up")));
   }
 }
