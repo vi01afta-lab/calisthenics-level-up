@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-    paths-ignore:
-      - '.github/copilot-instructions.md'
 
 permissions:
   contents: read
@@ -13,46 +11,32 @@ permissions:
   [REDACTED]
 
 concurrency:
-  group: "pages"
+  group: pages
   cancel-in-progress: false
 
 jobs:
-  build-and-deploy-web:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+      - run: flutter config --enable-web
+      - run: flutter create . --platforms web
+      - run: flutter build web --base-href /calisthenics-level-up/
+      - uses: actions/configure-pages@v4
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/web
+
+  deploy:
+    needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-      - name: Build Web
-        run: |
-          flutter pub get
-          flutter config --enable-web
-          flutter build web --base-href /calisthenics-level-up/
-      - name: Setup Pages
-        uses: actions/configure-pages@v4
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: 'build/web'
-      - name: Deploy to GitHub Pages
-        id: deployment
+      - id: deployment
         uses: actions/deploy-pages@v4
-
-  deploy-firestore:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - run: npm install -g firebase-tools
-      - env:
-          FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
-          PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
-        run: |
-          echo "$FIREBASE_CREDENTIALS" > firebase_key.json
-          echo '{"firestore": {"rules": "firestore.rules"}}' > firebase.json
-          export GOOGLE_APPLICATION_CREDENTIALS="$(pwd)/firebase_key.json"
-          firebase deploy --only firestore:rules --project $PROJECT_ID
