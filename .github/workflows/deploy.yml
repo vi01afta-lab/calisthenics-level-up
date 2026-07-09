@@ -1,13 +1,50 @@
-name: Auto-Deploy Firestore & Web HUD
+name: Flutter Web Deploy
 
 on:
   push:
     branches:
       - main
+    paths-ignore:
+      - '.github/copilot-instructions.md'
+
+permissions:
+  contents: read
+  pages: write
+  [REDACTED]
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
 
 jobs:
+  build-and-deploy-web:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+      - name: Build Web
+        run: |
+          flutter pub get
+          flutter config --enable-web
+          flutter build web --base-href /calisthenics-level-up/
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: 'build/web'
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
   deploy-firestore:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - run: npm install -g firebase-tools
@@ -19,21 +56,3 @@ jobs:
           echo '{"firestore": {"rules": "firestore.rules"}}' > firebase.json
           export GOOGLE_APPLICATION_CREDENTIALS="$(pwd)/firebase_key.json"
           firebase deploy --only firestore:rules --project $PROJECT_ID
-
-  build-and-deploy-web:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-      - name: Build Web
-        run: |
-          flutter pub get
-          flutter config --enable-web
-          flutter create . --platforms web
-          flutter build web --base-href /calisthenics-level-up/
-      - name: Deploy to GitHub Pages
-        uses: JamesIves/github-pages-deploy-action@v4
-        with:
-          folder: build/web
