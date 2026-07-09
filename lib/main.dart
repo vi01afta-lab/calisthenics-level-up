@@ -1,146 +1,85 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'dart:async';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:provider/provider.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
   await Hive.initFlutter();
   await Hive.openBox('user_stats');
-  runApp(const MyApp());
+  await Firebase.initializeApp();
+  runApp(const CalisthenicsApp());
 }
 
-class StatsRepository {
+class UserRepository {
+  final FirebaseFirestore _db = FirebaseFirestore.instance;
   final Box _box = Hive.box('user_stats');
-  
-  double get xp => _box.get('xp', defaultValue: 0.0);
-  
-  void updateXp(double newXp) {
-    _box.put('xp', newXp);
-    // Aquí iría la lógica de sincronización diferida con Firestore
+
+  Future<void> updateStats(int level, double xp) async {
+    _box.putAll({'level': level, 'xp': xp});
+    try {
+      await _db.collection('users').doc('current_user_id').set({
+        'level': level,
+        'xp': xp,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (e) {
+      debugPrint("Offline mode: Data cached locally.");
+    }
   }
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class DashboardProvider extends ChangeNotifier {
+  final UserRepository _repo = UserRepository();
+  int level = 1;
+  double xp = 0.0;
+
+  DashboardProvider() {
+    final box = Hive.box('user_stats');
+    level = box.get('level', defaultValue: 1);
+    xp = box.get('xp', defaultValue: 0.0);
+  }
+
+  void addXp(double amount) {
+    xp += amount;
+    if (xp >= 100) { level++; xp = 0; }
+    _repo.updateStats(level, xp);
+    notifyListeners();
+  }
+}
+
+class CalisthenicsApp extends StatelessWidget {
+  const CalisthenicsApp({super.key});
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF0A0A0F),
-        primaryColor: const Color(0xFF00D4FF),
+    return ChangeNotifierProvider(
+      create: (_) => DashboardProvider(),
+      child: MaterialApp(
+        theme: ThemeData.dark().copyWith(scaffoldBackgroundColor: const Color(0xFF0A0A0F)),
+        home: const RPGDashboard(),
       ),
-      home: const RPGDashboard(),
     );
   }
 }
 
-class RPGDashboard extends StatefulWidget {
+class RPGDashboard extends StatelessWidget {
   const RPGDashboard({super.key});
   @override
-  State<RPGDashboard> createState() => _RPGDashboardState();
-}
-
-class _RPGDashboardState extends State<RPGDashboard> {
-  late StreamSubscription<User?> _authSubscription;
-  final StatsRepository _repo = StatsRepository();
-
-  @override
-  void initState() {
-    super.initState();
-    _authSubscription = FirebaseAuth.instance.authStateChanges().listen((user) {});
-  }
-
-  @override
-  void dispose() {
-    _authSubscription.cancel();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
+    final provider = context.watch<DashboardProvider>();
     return Scaffold(
-      body: Column(
-        children: [
-          const SizedBox(height: 60),
-          ValueListenableBuilder(
-            valueListenable: Hive.box('user_stats').listenable(),
-            builder: (context, box, _) {
-              return XPBar(currentXp: _repo.xp, maxXp: 1000);
-            },
-          ),
-          const Expanded(child: TabataWidget()),
-        ],
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text("LEVEL ${provider.level}", style: const TextStyle(fontSize: 32)),
+            LinearProgressIndicator(value: provider.xp / 100),
+            ElevatedButton(onPressed: () => provider.addXp(10), child: const Text("Entrenar")),
+          ],
+        ),
       ),
-    );
-  }
-}
-
-class XPBar extends StatelessWidget {
-  final double currentXp, maxXp;
-  const XPBar({super.key, required this.currentXp, required this.maxXp});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        children: [
-          Text("${(currentXp / maxXp * 100).toInt()}%", style: const TextStyle(fontFamily: 'Orbitron', color: Color(0xFF00D4FF))),
-          LinearProgressIndicator(value: currentXp / maxXp, backgroundColor: Colors.white10, color: const Color(0xFF00D4FF)),
-        ],
-      ),
-    );
-  }
-}
-
-class TabataWidget extends StatefulWidget {
-  const TabataWidget({super.key});
-  @override
-  State<TabataWidget> createState() => _TabataWidgetState();
-}
-
-class _TabataWidgetState extends State<TabataWidget> {
-  int _seconds = 20;
-  Timer? _timer;
-  bool _isActive = false;
-  final StatsRepository _repo = StatsRepository();
-
-  void _toggleTimer() {
-    if (_isActive) {
-      _timer?.cancel();
-    } else {
-      _timer = Timer.periodic(const Duration(seconds: 1), (t) {
-        if (_seconds > 0) {
-          setState(() => _seconds--);
-        } else {
-          _timer?.cancel();
-          _repo.updateXp(_repo.xp + 10); // Sincronización diferida al finalizar
-        }
-      });
-    }
-    setState(() => _isActive = !_isActive);
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Text("$_seconds", style: const TextStyle(fontFamily: 'Orbitron', fontSize: 80, color: Colors.white)),
-        IconButton(
-          icon: Icon(_isActive ? Icons.pause : Icons.play_arrow, size: 50, color: const Color(0xFF00D4FF)),
-          onPressed: _toggleTimer,
-        )
-      ],
     );
   }
 }
